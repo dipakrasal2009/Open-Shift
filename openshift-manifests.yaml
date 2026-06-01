@@ -41,7 +41,7 @@ spec:
     spec:
       containers:
         - name: nginx
-          image: nginx:latest
+          image: bitnami/nginx:latest
           ports:
             - containerPort: 80
           resources:
@@ -181,7 +181,7 @@ spec:
     spec:
       containers:
         - name: app
-          image: nginx:latest
+          image: bitnami/nginx:latest
           ports:
             - containerPort: 8080
           # Inject ConfigMap as environment variables
