@@ -41,9 +41,9 @@ spec:
     spec:
       containers:
         - name: nginx
-          image: bitnami/nginx:latest
+          image: nginxinc/nginx-unprivileged:latest
           ports:
-            - containerPort: 80
+            - containerPort: 8080
           resources:
             requests:
               memory: "64Mi"
@@ -54,13 +54,13 @@ spec:
           readinessProbe:
             httpGet:
               path: /
-              port: 80
+              port: 8080
             initialDelaySeconds: 5
             periodSeconds: 10
           livenessProbe:
             httpGet:
               path: /
-              port: 80
+              port: 8080
             initialDelaySeconds: 15
             periodSeconds: 20
 
@@ -156,7 +156,7 @@ spec:
   resources:
     requests:
       storage: 1Gi
-  storageClassName: gp2   # AWS EBS gp2 (default on OCP/AWS)
+  storageClassName: gp3-csi   # AWS EBS gp2 (default on OCP/AWS)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -181,7 +181,7 @@ spec:
     spec:
       containers:
         - name: app
-          image: bitnami/nginx:latest
+          image: nginxinc/nginx-unprivileged:latest
           ports:
             - containerPort: 8080
           # Inject ConfigMap as environment variables
