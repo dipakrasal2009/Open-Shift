@@ -1,0 +1,379 @@
+# ============================================================
+# OpenShift 4.x – Sample Manifest Files for Practice
+# Apply with: oc apply -f <filename>.yaml
+# ============================================================
+
+
+# ─────────────────────────────────────────────────────────────
+# 1. NAMESPACE / PROJECT
+# ─────────────────────────────────────────────────────────────
+# oc new-project demo-app  (CLI shortcut)
+# OR declaratively:
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: demo-app
+  labels:
+    app: demo
+
+
+# ─────────────────────────────────────────────────────────────
+# 2. DEPLOYMENT  (runs a simple nginx web server)
+# ─────────────────────────────────────────────────────────────
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-deployment
+  namespace: demo-app
+  labels:
+    app: nginx
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: nginx
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:latest
+          ports:
+            - containerPort: 80
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "250m"
+            limits:
+              memory: "128Mi"
+              cpu: "500m"
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 15
+            periodSeconds: 20
+
+
+# ─────────────────────────────────────────────────────────────
+# 3. SERVICE  (exposes the Deployment inside the cluster)
+# ─────────────────────────────────────────────────────────────
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-service
+  namespace: demo-app
+spec:
+  selector:
+    app: nginx
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+  type: ClusterIP
+
+
+# ─────────────────────────────────────────────────────────────
+# 4. ROUTE  (OpenShift-specific – exposes service externally)
+# URL: http://nginx-demo-app.<cluster-domain>
+# ─────────────────────────────────────────────────────────────
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: nginx-route
+  namespace: demo-app
+spec:
+  to:
+    kind: Service
+    name: nginx-service
+  port:
+    targetPort: 80
+  tls:
+    termination: edge          # edge | passthrough | reencrypt
+    insecureEdgeTerminationPolicy: Redirect
+
+
+# ─────────────────────────────────────────────────────────────
+# 5. CONFIGMAP  (inject configuration as env vars or files)
+# ─────────────────────────────────────────────────────────────
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: demo-app
+data:
+  APP_ENV: "production"
+  APP_PORT: "8080"
+  LOG_LEVEL: "info"
+  # Multi-line config file example
+  app.properties: |
+    server.port=8080
+    server.host=0.0.0.0
+    log.level=info
+
+
+# ─────────────────────────────────────────────────────────────
+# 6. SECRET  (store sensitive data – base64 encoded)
+# echo -n 'mypassword' | base64
+# ─────────────────────────────────────────────────────────────
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: app-secret
+  namespace: demo-app
+type: Opaque
+data:
+  DB_USERNAME: bXl1c2Vy          # base64 of "myuser"
+  DB_PASSWORD: bXlwYXNzd29yZA==  # base64 of "mypassword"
+
+
+# ─────────────────────────────────────────────────────────────
+# 7. PERSISTENTVOLUMECLAIM  (request storage)
+# ─────────────────────────────────────────────────────────────
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: app-pvc
+  namespace: demo-app
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  storageClassName: gp2   # AWS EBS gp2 (default on OCP/AWS)
+
+
+# ─────────────────────────────────────────────────────────────
+# 8. DEPLOYMENT WITH CONFIGMAP + SECRET + PVC MOUNTED
+# (combines resources 5, 6, 7 above)
+# ─────────────────────────────────────────────────────────────
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app-full-deployment
+  namespace: demo-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: full-app
+  template:
+    metadata:
+      labels:
+        app: full-app
+    spec:
+      containers:
+        - name: app
+          image: nginx:latest
+          ports:
+            - containerPort: 8080
+          # Inject ConfigMap as environment variables
+          envFrom:
+            - configMapRef:
+                name: app-config
+          # Inject Secret values as environment variables
+          env:
+            - name: DB_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: app-secret
+                  key: DB_USERNAME
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: app-secret
+                  key: DB_PASSWORD
+          # Mount PVC as a volume
+          volumeMounts:
+            - name: app-storage
+              mountPath: /data
+            # Mount ConfigMap file
+            - name: config-volume
+              mountPath: /etc/config
+      volumes:
+        - name: app-storage
+          persistentVolumeClaim:
+            claimName: app-pvc
+        - name: config-volume
+          configMap:
+            name: app-config
+
+
+# ─────────────────────────────────────────────────────────────
+# 9. HORIZONTAL POD AUTOSCALER  (auto-scale pods on CPU usage)
+# ─────────────────────────────────────────────────────────────
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: nginx-hpa
+  namespace: demo-app
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: nginx-deployment
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+
+
+# ─────────────────────────────────────────────────────────────
+# 10. CRONJOB  (scheduled task – runs every 5 minutes)
+# ─────────────────────────────────────────────────────────────
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: hello-cron
+  namespace: demo-app
+spec:
+  schedule: "*/5 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+            - name: hello
+              image: busybox
+              command: ["sh", "-c", "echo Hello from CronJob at $(date)"]
+          restartPolicy: OnFailure
+
+
+# ─────────────────────────────────────────────────────────────
+# 11. RESOURCEQUOTA  (limit resource usage per namespace)
+# ─────────────────────────────────────────────────────────────
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: demo-quota
+  namespace: demo-app
+spec:
+  hard:
+    pods: "10"
+    requests.cpu: "4"
+    requests.memory: 4Gi
+    limits.cpu: "8"
+    limits.memory: 8Gi
+    persistentvolumeclaims: "5"
+
+
+# ─────────────────────────────────────────────────────────────
+# 12. NETWORKPOLICY  (control pod-to-pod traffic)
+# Allow only pods with label app=nginx to receive traffic
+# ─────────────────────────────────────────────────────────────
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-nginx-ingress
+  namespace: demo-app
+spec:
+  podSelector:
+    matchLabels:
+      app: nginx
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              role: frontend
+      ports:
+        - protocol: TCP
+          port: 80
+
+
+# ─────────────────────────────────────────────────────────────
+# 13. SERVICEACCOUNT + ROLEBINDING  (RBAC)
+# ─────────────────────────────────────────────────────────────
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: demo-sa
+  namespace: demo-app
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: demo-sa-binding
+  namespace: demo-app
+subjects:
+  - kind: ServiceAccount
+    name: demo-sa
+    namespace: demo-app
+roleRef:
+  kind: ClusterRole
+  name: view             # built-in: view | edit | admin
+  apiGroup: rbac.authorization.k8s.io
+
+
+# ─────────────────────────────────────────────────────────────
+# 14. IMAGESTREAM  (OpenShift-specific – track container images)
+# ─────────────────────────────────────────────────────────────
+---
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: my-app-image
+  namespace: demo-app
+spec:
+  lookupPolicy:
+    local: false
+
+
+# ─────────────────────────────────────────────────────────────
+# 15. BUILDCONFIG  (OpenShift-specific – S2I build from Git)
+# ─────────────────────────────────────────────────────────────
+---
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: my-app-build
+  namespace: demo-app
+spec:
+  source:
+    type: Git
+    git:
+      uri: "https://github.com/example/my-app.git"
+      ref: "main"
+  strategy:
+    type: Source
+    sourceStrategy:
+      from:
+        kind: ImageStreamTag
+        namespace: openshift
+        name: "nodejs:16-ubi8"
+  output:
+    to:
+      kind: ImageStreamTag
+      name: "my-app-image:latest"
+  triggers:
+    - type: ConfigChange
+    - type: ImageChange
