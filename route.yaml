@@ -1,0 +1,38 @@
+# Please edit the object below. Lines beginning with a '#' will be ignored,
+# and an empty file will abort the edit. If an error occurs while saving this file will be
+# reopened with the relevant failures.
+#
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  annotations:
+    openshift.io/host.generated: "true"
+  creationTimestamp: "2026-06-02T05:39:36Z"
+  labels:
+    app: gethostname-v1
+    app.kubernetes.io/component: gethostname-v1
+    app.kubernetes.io/instance: gethostname-v1
+  name: gethostname-microservice
+  namespace: default
+  resourceVersion: "29211"
+  uid: 3f81a8ac-d4f8-4e5c-878f-965089121448
+spec:
+  host: gethostname-microservice-default.apps.ocp.glistopenshift.online
+  port:
+    targetPort: 8080-tcp
+  to:
+    kind: Service
+    name: gethostname-v1
+    weight: 100
+  wildcardPolicy: None
+status:
+  ingress:
+  - conditions:
+    - lastTransitionTime: "2026-06-02T05:39:36Z"
+      status: "True"
+      type: Admitted
+    host: gethostname-microservice-default.apps.ocp.glistopenshift.online
+    routerCanonicalHostname: router-default.apps.ocp.glistopenshift.online
+    routerName: default
+    wildcardPolicy: None
+~                                  
