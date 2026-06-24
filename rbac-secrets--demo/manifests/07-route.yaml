@@ -1,0 +1,11 @@
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: rbac-secrets-demo
+  namespace: rbac-secrets-demo
+spec:
+  to:
+    kind: Service
+    name: rbac-secrets-demo
+  port:
+    targetPort: 8080
