@@ -1,0 +1,188 @@
+[root@ip-172-31-1-26 Dipak]# ./script.sh 
+
+══════════════════════════════════════════
+  Pre-flight Checks
+══════════════════════════════════════════
+[OK]    Pre-flight checks passed.
+
+══════════════════════════════════════════
+  Step 1 — Tearing Down Previous Installation
+══════════════════════════════════════════
+[INFO]  Uninstalling Helm release: cruisekube (namespace: cruisekube-system)
+release "cruisekube" uninstalled
+[OK]    CruiseKube Helm release removed.
+[INFO]  Cleaning up any orphaned pre-install hook Jobs...
+No resources found
+[OK]    Orphaned bootstrap Job deleted.
+[INFO]  Uninstalling Helm release: cruisekube-prometheus (namespace: cruisekube-metrics)
+release "cruisekube-prometheus" uninstalled
+[OK]    Prometheus Helm release removed.
+[INFO]  Deleting namespace: cruisekube-system
+namespace "cruisekube-system" deleted
+[OK]    Namespace cruisekube-system deleted.
+[INFO]  Deleting namespace: cruisekube-metrics
+namespace "cruisekube-metrics" deleted
+[OK]    Namespace cruisekube-metrics deleted.
+[OK]    Teardown complete — clean slate ready.
+
+══════════════════════════════════════════
+  Step 2 — Writing Prometheus values file
+══════════════════════════════════════════
+[OK]    Prometheus values file written to /tmp/standalone-prometheus-values.yaml
+
+══════════════════════════════════════════
+  Step 3 — Installing Standalone Prometheus
+══════════════════════════════════════════
+[INFO]  Adding prometheus-community Helm repo...
+"prometheus-community" already exists with the same configuration, skipping
+Hang tight while we grab the latest from your chart repositories...
+...Successfully got an update from the "cetic" chart repository
+...Successfully got an update from the "jetstack" chart repository
+...Successfully got an update from the "prometheus-community" chart repository
+...Successfully got an update from the "stackable-stable" chart repository
+...Successfully got an update from the "stackable" chart repository
+...Successfully got an update from the "bitnami" chart repository
+Update Complete. ⎈Happy Helming!⎈
+[OK]    Helm repo updated.
+[INFO]  Installing Prometheus into namespace: cruisekube-metrics
+NAME: cruisekube-prometheus
+LAST DEPLOYED: Fri Jun 26 09:12:01 2026
+NAMESPACE: cruisekube-metrics
+STATUS: deployed
+REVISION: 1
+TEST SUITE: None
+NOTES:
+The Prometheus server can be accessed via port 80 on the following DNS name from within your cluster:
+cruisekube-prometheus-server.cruisekube-metrics.svc.cluster.local
+
+
+Get the Prometheus server URL by running these commands in the same shell:
+  export POD_NAME=$(kubectl get pods --namespace cruisekube-metrics -l "app.kubernetes.io/name=prometheus,app.kubernetes.io/instance=cruisekube-prometheus" -o jsonpath="{.items[0].metadata.name}")
+  kubectl --namespace cruisekube-metrics port-forward $POD_NAME 9090
+
+
+
+
+
+For more information on running Prometheus, visit:
+https://prometheus.io/
+[OK]    Prometheus Helm install triggered.
+[INFO]  Waiting for Prometheus server pod to be ready (up to 3 min)...
+pod/cruisekube-prometheus-server-667c5c674f-k9rq6 condition met
+[OK]    Prometheus pod is Ready.
+
+══════════════════════════════════════════
+  Step 4 — Granting cluster-monitoring-view RBAC
+══════════════════════════════════════════
+[INFO]  Prometheus ServiceAccount: cruisekube-prometheus-server
+clusterrole.rbac.authorization.k8s.io/cluster-monitoring-view added: "cruisekube-prometheus-server"
+[OK]    cluster-monitoring-view granted to cruisekube-prometheus-server.
+
+══════════════════════════════════════════
+  Step 5 — Exposing Prometheus Route
+══════════════════════════════════════════
+route.route.openshift.io/cruisekube-prometheus-server exposed
+[OK]    Prometheus Route created: http://cruisekube-prometheus-server-cruisekube-metrics.apps.ocp.glistopenshift.online
+
+══════════════════════════════════════════
+  Step 6 — Installing CruiseKube
+══════════════════════════════════════════
+[INFO]  Creating namespace: cruisekube-system
+namespace/cruisekube-system created
+[INFO]  Granting anyuid SCC to all service accounts in cruisekube-system...
+clusterrole.rbac.authorization.k8s.io/system:openshift:scc:anyuid added: "system:serviceaccounts:cruisekube-system"
+[OK]    anyuid SCC granted.
+[INFO]  Prometheus internal URL wired into CruiseKube: http://cruisekube-prometheus-server.cruisekube-metrics.svc:80
+[INFO]  Installing CruiseKube via OCI Helm chart...
+Pulled: tfy.jfrog.io/tfy-helm/cruisekube:0.3.3
+Digest: sha256:1707d70e301342c1f9e8ca000eac8485ce8fcab6fe7ba91f6f5c339a8c7110ba
+NAME: cruisekube
+LAST DEPLOYED: Fri Jun 26 09:12:43 2026
+NAMESPACE: cruisekube-system
+STATUS: deployed
+REVISION: 1
+TEST SUITE: None
+NOTES:
+Thank you for installing cruisekube.
+
+Release: cruisekube
+Namespace: cruisekube-system
+
+Help us keep CruiseKube thriving in open source: add your team to the Adopters list (it boosts credibility and keeps us motivated to keep shipping improvements):
+
+- https://github.com/truefoundry/CruiseKube/issues/new?template=adopter.yaml
+
+---
+
+Controller HTTP basic auth credentials are stored in Secret cruisekube-controller-admin-credentials (created by the pre-install hook when missing).
+
+Read the generated admin username:
+
+  kubectl get secret cruisekube-controller-admin-credentials -n cruisekube-system -o jsonpath="{.data['admin-user']}" | base64 -d && echo
+
+Read the generated admin password:
+
+  kubectl get secret cruisekube-controller-admin-credentials -n cruisekube-system -o jsonpath="{.data['admin-password']}" | base64 -d && echo
+
+If you used helm install --dry-run, these commands apply after a real install once the hook Job has created the Secret.
+
+---
+
+Usage telemetry is enabled: the controller sends anonymous periodic heartbeats to help improve CruiseKube. A stable install identifier is stored in Secret cruisekube-controller-runtime-data (key install-id). To turn this off, set cruisekubeController.usageTelemetry.enabled to false and upgrade the release.
+
+---
+[OK]    CruiseKube Helm install triggered.
+[INFO]  Waiting for CruiseKube pods to be ready (up to 5 min)...
+pod/cruisekube-controller-5c6d8d4b86-8fvgq condition met
+pod/cruisekube-frontend-668b9949b-74djt condition met
+pod/cruisekube-webhook-666f6b5d65-6d27k condition met
+partitioned roll out complete: 1 new pods have been updated...
+[OK]    CruiseKube pods are Ready.
+
+══════════════════════════════════════════
+  Step 7 — Exposing CruiseKube Frontend Route
+══════════════════════════════════════════
+route.route.openshift.io/cruisekube-frontend exposed
+[OK]    CruiseKube Dashboard Route created: http://cruisekube-frontend-cruisekube-system.apps.ocp.glistopenshift.online
+
+══════════════════════════════════════════
+  Step 8 — Retrieving Admin Credentials
+══════════════════════════════════════════
+[INFO]  Waiting for bootstrap-secrets Job to complete (generates credentials)...
+[WARN]  Bootstrap job timeout — credentials may still be available in the Secret.
+
+╔══════════════════════════════════════════════════════════╗
+║        CruiseKube Setup Complete — Access Details        ║
+╚══════════════════════════════════════════════════════════╝
+
+── Prometheus ──────────────────────────────────────────────
+  URL        : http://cruisekube-prometheus-server-cruisekube-metrics.apps.ocp.glistopenshift.online
+  Targets    : http://cruisekube-prometheus-server-cruisekube-metrics.apps.ocp.glistopenshift.online/targets
+  Auth       : No authentication (open access via Route)
+
+── CruiseKube Dashboard ────────────────────────────────────
+  URL        : http://cruisekube-frontend-cruisekube-system.apps.ocp.glistopenshift.online
+  Username   : cruisekube
+  Password   : pANEuJdDxH3si9o7EKv10cE3O8p6zaze
+
+── Notes ───────────────────────────────────────────────────
+  * CruiseKube waits 1 hour of metrics history before showing
+    workload recommendations (by design). Dashboard will show
+    0/0 workloads initially — this is normal.
+  * Leave workloads in Recommend mode for several days
+    before enabling Cruise (auto-apply) mode.
+  * The anyuid SCC grant on cruisekube-system is dev/sandbox only.
+    Review with your security team before production use.
+
+── Quick Credential Retrieval (anytime) ────────────────────
+  oc get secret cruisekube-controller-admin-credentials -n cruisekube-system \
+    -o jsonpath='{.data.admin-user}' | base64 -d && echo
+  oc get secret cruisekube-controller-admin-credentials -n cruisekube-system \
+    -o jsonpath='{.data.admin-password}' | base64 -d && echo
+
+── Verification Commands ───────────────────────────────────
+  oc get pods -n cruisekube-metrics
+  oc get pods -n cruisekube-system
+  curl -s 'http://cruisekube-prometheus-server-cruisekube-metrics.apps.ocp.glistopenshift.online/api/v1/targets' | jq '.data.activeTargets[] | {job: .labels.job, health: .health}'
+
+
