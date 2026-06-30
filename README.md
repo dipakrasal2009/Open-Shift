@@ -2,6 +2,8 @@
 
 > End-to-end steps to create an OpenShift Container Platform (OCP) cluster on AWS using **User Provisioned Infrastructure (UPI)**.
 
+
+
 ---
 
 ## Table of Contents
@@ -23,6 +25,8 @@
 
 - **Red Hat Account** – Required to download the pull secret.
 - **AWS CLI** – Installed and configured on your Linux EC2 instance.
+
+
 
 ---
 
