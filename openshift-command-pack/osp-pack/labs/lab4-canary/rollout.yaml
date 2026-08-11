@@ -1,0 +1,31 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: web-canary
+  namespace: prod-sim
+spec:
+  replicas: 5
+  strategy:
+    canary:
+      steps:
+      - setWeight: 20
+      - pause: { duration: 2m }
+      - analysis:
+          templates:
+          - templateName: error-rate-check
+      - setWeight: 60
+      - pause: { duration: 2m }
+      - setWeight: 100
+  selector:
+    matchLabels: { app: web-canary }
+  template:
+    metadata:
+      labels: { app: web-canary }
+    spec:
+      containers:
+      - name: web
+        image: quay.io/openshifttest/hello-openshift:1.2.0
+        ports: [ { containerPort: 8080 } ]
+        resources:
+          requests: { cpu: 50m, memory: 64Mi }
+          limits: { memory: 128Mi }

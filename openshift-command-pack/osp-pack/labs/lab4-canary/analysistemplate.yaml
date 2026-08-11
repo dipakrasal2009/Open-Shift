@@ -1,0 +1,20 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: error-rate-check
+  namespace: prod-sim
+spec:
+  metrics:
+  - name: error-rate
+    interval: 30s
+    count: 4
+    successCondition: result[0] < 0.05
+    failureLimit: 1
+    provider:
+      prometheus:
+        address: https://thanos-querier.openshift-monitoring.svc:9091
+        # ServiceAccount of the analysis run needs cluster-monitoring-view;
+        # see commands.sh step 2 for the RBAC binding.
+        query: |
+          sum(rate(http_requests_total{status=~"5..",app="web-canary"}[2m]))
+          / sum(rate(http_requests_total{app="web-canary"}[2m]))
