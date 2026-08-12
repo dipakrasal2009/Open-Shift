@@ -1,0 +1,63 @@
+# ============================================================
+# Single-broker dev Kafka - sized for ONE ~15Gi worker.
+# All replication factors = 1 (only one broker exists).
+# NO rack block (needs multiple zones with workers in each).
+# Ephemeral storage (no PVC provisioning while learning).
+# ============================================================
+apiVersion: kafka.strimzi.io/v1beta2
+kind: Kafka
+metadata:
+  name: dev-kafka
+  namespace: kafka
+spec:
+  kafka:
+    version: 3.7.0
+    replicas: 1
+    listeners:
+    - name: plain
+      port: 9092
+      type: internal
+      tls: false
+    config:
+      # ALL of these MUST be 1 with a single broker, or produce/consume hangs:
+      offsets.topic.replication.factor: 1
+      transaction.state.log.replication.factor: 1
+      transaction.state.log.min.isr: 1
+      default.replication.factor: 1
+      min.insync.replicas: 1
+    storage:
+      type: ephemeral
+    resources:
+      requests: { memory: 1Gi, cpu: 250m }
+      limits: { memory: 2Gi, cpu: "1" }
+    # Expose JMX metrics to Prometheus (needed for the lag detector):
+    metricsConfig:
+      type: jmxPrometheusExporter
+      valueFrom:
+        configMapKeyRef:
+          name: kafka-metrics
+          key: kafka-metrics-config.yml
+  zookeeper:
+    replicas: 1
+    storage:
+      type: ephemeral
+    resources:
+      requests: { memory: 512Mi, cpu: 100m }
+      limits: { memory: 1Gi, cpu: 500m }
+  entityOperator:
+    topicOperator: {}
+    userOperator: {}
+---
+# Dev topic: single partition, RF=1
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaTopic
+metadata:
+  name: demo-topic
+  namespace: kafka
+  labels:
+    strimzi.io/cluster: dev-kafka
+spec:
+  partitions: 3
+  replicas: 1
+  config:
+    min.insync.replicas: 1
