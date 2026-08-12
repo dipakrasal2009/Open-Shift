@@ -1,0 +1,331 @@
+
+/
+Claude finished the response
+
+Architected deployable application with failure scenarios and troubleshooting runbooks
+Architected deployable application with failure scenarios and troubleshooting runbooks
+This is the right way to learn it — deploy something real, break it deliberately, then troubleshoot with a method instead of guessing. Below is a hands-on lab track you can run on your cluster. Each lab has three parts: what you deploy, how you break it, and how a senior engineer walks the diagnosis. Do them in order, because later labs reuse what earlier ones build.
+
+Before the labs, internalize the troubleshooting sequence that experienced people run almost automatically. It always moves in the same direction: event → pod → node → platform. Concretely:
+
+oc get events -n <ns> --sort-by='.lastTimestamp'   # what did the platform say happened
+oc describe pod <pod>                              # scheduling, probes, image, SCC
+oc logs <pod> --previous                           # why the LAST container died (most people forget --previous)
+oc get co                                          # is this me, or is the platform degraded
+oc adm top nodes && oc describe node <node>        # pressure, allocatable, taints
+If you diagnose in that order you'll find 90% of production issues without ever needing must-gather. Now the labs.
+
+Lab 1 — Deploy the base app and break the rolling update three ways
+Deploy a simple app you'll reuse throughout:
+
+oc new-project prod-sim
+oc new-app --name=web --image=quay.io/openshifttest/hello-openshift:1.2.0
+oc scale deployment/web --replicas=4
+oc expose deployment web --port=8080
+oc expose svc/web
+oc set probe deployment/web --readiness --get-url=http://:8080/ --initial-delay-seconds=5
+Set the production-grade rollout parameters — this is the part most teams leave at defaults and regret:
+
+oc patch deployment web -p '{"spec":{"strategy":{"rollingUpdate":{"maxSurge":1,"maxUnavailable":0}}}}'
+maxUnavailable: 0 means the rollout can never reduce serving capacity — new pod must be Ready before an old one dies. Now break it.
+
+Break 1 — bad image tag (the "everything is down" classic):
+
+oc set image deployment/web web=quay.io/openshifttest/hello-openshift:doesnotexist
+Watch what happens: oc get pods -w. You'll see one new pod stuck in ImagePullBackOff — and here's the lesson — the old 4 pods keep serving. The app never went down, because maxUnavailable: 0 held the line. Diagnosis path: oc describe pod <new-pod> → Events section shows Failed to pull image ... manifest unknown. Fix: oc rollout undo deployment/web. Then verify: oc rollout status deployment/web.
+
+Now repeat the same bad image after setting maxUnavailable: 25% and watch capacity actually drop. That contrast is the whole argument for the setting.
+
+Break 2 — app that starts but fails readiness (the sneaky one):
+
+oc set probe deployment/web --readiness --get-url=http://:8080/nonexistent
+Pods show Running but 0/1 Ready, rollout hangs forever at "1 old replica pending termination." Juniors stare at Running and get confused. The tell: oc describe pod → Readiness probe failed: HTTP probe failed with statuscode: 404. Also check oc get endpoints web — the new pod never enters the endpoints list, which is exactly why traffic never broke. Rollback, verify endpoints repopulate.
+
+Break 3 — CrashLoopBackOff:
+
+oc patch deployment web --type=json -p '[{"op":"add","path":"/spec/template/spec/containers/0/command","value":["/bin/sh","-c","exit 1"]}]'
+Here the critical habit is oc logs <pod> --previous — the current container hasn't produced logs, the dead one has. Also note the backoff timing doubling (10s, 20s, 40s… capped at 5m) in events; recognizing that pattern on sight saves time in real incidents.
+
+Lab 2 — "All jobs went down": batch workload failure drill
+This reproduces the exact scenario you named. Deploy a CronJob fleet:
+
+oc create cronjob report-gen --image=registry.access.redhat.com/ubi9/ubi-minimal \
+  --schedule="*/2 * * * *" -- /bin/sh -c "echo processing && sleep 30 && echo done"
+Break 1 — quota exhaustion silently kills all future jobs:
+
+oc create quota batch-quota --hard=pods=2
+Wait two cycles. Jobs stop producing pods entirely — and nothing is CrashLooping, which is why this one bites teams in prod: there's no red pod to see. Diagnosis: oc get jobs shows jobs with 0/1 completions, oc describe job <name> → events show Error creating: pods "report-gen-..." is forbidden: exceeded quota. The failure lives on the Job object, not on any pod, because no pod ever existed. That's the core lesson: when pods are missing rather than failing, describe the controller, not the pod.
+
+Break 2 — concurrencyPolicy pile-up: patch the job command to sleep 300 (longer than the 2-minute schedule) with concurrencyPolicy: Allow (default). Watch jobs stack until quota or node resources choke. Then fix properly:
+
+oc patch cronjob report-gen -p '{"spec":{"concurrencyPolicy":"Forbid","startingDeadlineSeconds":120,"failedJobsHistoryLimit":3}}'
+Those three fields are the difference between a toy CronJob and a production one. startingDeadlineSeconds matters for a subtle reason: if the controller misses >100 schedules with no deadline set, it permanently stops scheduling that CronJob — a real-world "all jobs down" root cause that very few people know until it happens to them.
+
+Break 3 — SCC denial: patch the job to request runAsUser: 0. Pods fail admission with unable to validate against any security context constraint. Diagnosis command worth memorizing: oc adm policy scc-subject-review -u system:serviceaccount:prod-sim:default -f <pod-spec> — it tells you which SCC (if any) would admit the workload. The senior-level fix discussion: never grant anyuid reflexively; fix the image to run non-root, or create a scoped SCC bound to a dedicated ServiceAccount.
+
+Cleanup between breaks: oc delete quota batch-quota, oc delete jobs -l job-name.
+
+Lab 3 — Blue-green deployment with instant rollback, done with Routes
+Blue-green on OpenShift is elegantly simple because Routes switch backends atomically:
+
+oc new-app --name=web-blue quay.io/openshifttest/hello-openshift:1.2.0
+oc new-app --name=web-green quay.io/openshifttest/hello-openshift:multiarch
+oc expose svc/web-blue --name=prod-route
+Cut over to green:
+
+oc patch route prod-route -p '{"spec":{"to":{"name":"web-green"}}}'
+That's an atomic, sub-second switch, and rollback is the same command pointing back. Now make it production-grade: before every cutover, gate on green's health with a smoke test Job that curls web-green via its Service (not the route), and only patch the route if it exits 0. Script that gate — a 15-line shell script in a Job — and you have a deployable artifact for your GitOps repo.
+
+The senior-level discussion points you should be able to defend: blue-green doubles resource cost during the window (quota planning), database schema changes must be backward-compatible across both colors (expand/contract pattern), and long-lived connections (websockets, Kafka consumers in the app) don't cut over with the route — they drain on old pods, so terminationGracePeriodSeconds needs to match your longest connection.
+
+Lab 4 — Canary with Argo Rollouts and automated analysis (your AIOps hook)
+This is where your AIOps story plugs directly into deployment strategy. Install the Argo Rollouts operator from OperatorHub, then convert the app to a Rollout with a stepped canary:
+
+yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: web-canary
+spec:
+  replicas: 5
+  strategy:
+    canary:
+      steps:
+      - setWeight: 20
+      - pause: {duration: 2m}
+      - analysis:
+          templates:
+          - templateName: error-rate-check
+      - setWeight: 60
+      - pause: {duration: 2m}
+      - setWeight: 100
+  selector: {matchLabels: {app: web-canary}}
+  template:
+    metadata: {labels: {app: web-canary}}
+    spec:
+      containers:
+      - name: web
+        image: quay.io/openshifttest/hello-openshift:1.2.0
+        ports: [{containerPort: 8080}]
+The AnalysisTemplate queries Prometheus for the canary pods' error rate and automatically aborts and rolls back if it breaches threshold:
+
+yaml
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: error-rate-check
+spec:
+  metrics:
+  - name: error-rate
+    interval: 30s
+    count: 4
+    successCondition: result[0] < 0.05
+    provider:
+      prometheus:
+        address: https://thanos-querier.openshift-monitoring.svc:9091
+        query: |
+          sum(rate(http_requests_total{status=~"5..",app="web-canary"}[2m]))
+          / sum(rate(http_requests_total{app="web-canary"}[2m]))
+Test both branches, same discipline as before: run a clean rollout, then deploy a version that returns 500s on 10% of requests and watch the analysis abort it without a human touching anything. oc argo rollouts get rollout web-canary --watch gives you the live view. This one artifact — automated canary analysis against Prometheus — is simultaneously your deployment strategy demo and your AIOps demo, which is efficient for client presentations.
+
+Lab 5 — Platform-level troubleshooting drills (the ones that page you at night)
+Run these as timed drills — set a 15-minute target to root-cause each.
+
+Drill 1 — DNS breakage. Scale down CoreDNS impact simulation by adding a NetworkPolicy in your namespace that denies egress to openshift-dns. Symptom: apps fail with Name or service not known but existing connections work — the signature of DNS vs. network failure. Diagnosis path: oc debug pod in the namespace → nslookup kubernetes.default.svc.cluster.local 172.30.0.10 fails → oc get networkpolicy reveals the culprit. The lesson: always test DNS resolution from inside the affected namespace, because DNS problems are frequently NetworkPolicy problems wearing a disguise.
+
+Drill 2 — PVC stuck Pending. Create a PVC requesting a storageClass that doesn't exist. Pod stays Pending forever. Diagnosis: oc describe pvc → no persistent volumes available ... storageclass not found. Then the harder variant: correct storageClass but WaitForFirstConsumer binding mode with a nodeSelector that matches no nodes — the PVC and pod both wait on each other. oc describe pod events show the scheduling constraint; this teaches you that storage and scheduling failures interlock.
+
+Drill 3 — OOMKilled vs. evicted. Deploy a pod with a 64Mi limit running a memory hog. It dies with OOMKilled (exit code 137) — visible in oc describe pod under Last State. Contrast with node-pressure eviction from your earlier test plan: OOMKill is cgroup-level (limit breached, container killed, pod restarts in place), eviction is kubelet-level (node pressure, pod removed, rescheduled elsewhere). Being crisp on that distinction under pressure is a 10-year-experience tell.
+
+Drill 4 — Route 503. Delete the app's Service (leave the Route). Router returns 503. Diagnosis chain: Route exists → oc get endpoints <svc> → service gone or endpoints empty. Then restore the service but with a wrong selector — endpoints exist but empty, same 503, subtler cause. The rule: a 503 from the router is almost always an empty endpoints list, and endpoints are empty for exactly three reasons — no matching pods, pods not Ready, or wrong selector.
+
+Run the track in this order over roughly two weeks: Lab 1–2 first (failure literacy), Lab 5 drills interleaved daily, Labs 3–4 once the diagnosis reflexes are in place. Keep an incident log for every break — symptom, commands run, root cause, fix, time taken — written in runbook style. That log itself becomes a client-facing artifact showing your troubleshooting methodology, and honestly it's better interview material than any certification.
+
+Want me to package this as a formatted Word lab manual — one lab per section with objective, steps, expected output, diagnosis walkthrough, and a blank incident-log template at the end — validated and ready to share with Amit and the team?
+
+Straight answer: the version note you meant to paste didn't come through, and it matters less here than the topology question, so let me give you the node counts.
+
+There are two different targets, and the count depends on which one you're building.
+
+Target 1 — a production-grade cluster (what the test cases actually need)
+3 masters + 2 to 3 workers, spread across 3 AWS Availability Zones.
+
+3 masters is non-negotiable for anything you'd call production. etcd needs an odd number for quorum, and 3 is the floor — it tolerates losing 1. This is also the only way TC-01 (etcd quorum survival) becomes a real test instead of a moot one.
+2 workers minimum, 3 preferred. TC-03 needs enough workers to split a canary pool from a paused pool (so 2 is the real floor there). With 3 you can lose one and still run everything. TC-02's Kafka at RF=3 also wants 3 brokers landing on distinct nodes.
+3 AZs is the part people skip and shouldn't. TC-02 rack awareness and TC-04 zone partition are defined by zones. One AZ means those two cases can't be honest no matter how many nodes you have. So it's not just "5 nodes" — it's "5 nodes across us-east-1a / 1b / 1c."
+That's the standard OpenShift IPI layout on AWS. Red Hat's documented minimum for a production install is exactly 3 control plane + 2 compute.
+
+Target 2 — a single learning box (what runs the labs)
+Single-Node OpenShift: 1 node, master and worker roles combined. This runs all of Part A (Labs 1–5) fine. It cannot run TC-01 through TC-04 for the reasons in my last message — no quorum, no second broker, no separate canary pool, no second zone.
+
+The catch with "running in an EC2 instance"
+The phrase worries me a little. A production OpenShift cluster on AWS is 5+ separate EC2 instances (one per node), provisioned by the installer — not one instance you install things onto. If you've got OpenShift running inside a single EC2 instance, that's almost certainly SNO or OpenShift Local/CRC, which is Target 2.
+
+So the node math is really:
+
+What you want	Masters	Workers	EC2 instances	AZs
+Run the labs only	1 (combined)	—	1	1
+Run the full test suite	3	2–3	5–6	3
+A reasonable middle option some teams use: 3 masters + 2 workers as "compact", or even a 3-node compact cluster where masters are schedulable (mastersSchedulable: true). That gets you real etcd quorum and multi-AZ for TC-01/TC-02/TC-04, and you can make TC-03's canary work by labeling one of the three. It's cheaper than 6 instances while still being honest for four of the five cases.
+
+Instance sizing, so the count actually holds up:
+
+Masters: m5.2xlarge (8 vCPU / 32 GB) each is the comfortable floor; m5.xlarge works but gets tight once monitoring + operators load up.
+Workers: m5.2xlarge minimum, because Strimzi + Argo Rollouts + the AIOps CronJobs + your test workloads stack up. m5.4xlarge if you want headroom for TC-05's memory pressure test without risking real pods.
+Cost reality check, since you're on AWS: 6 × m5.2xlarge running continuously is real money. For learning, spin the cluster up for a test session and tear it down after — IPI's openshift-install destroy cluster cleans up all the instances, load balancers, and NAT gateways in one command, so you're not paying 24/7.
+
+Two things I still need to give you exact guidance:
+
+Which install is it right now — SNO, or OpenShift Local/CRC? (Tells me whether your current box can run the AIOps jobs at all, since CRC ships monitoring disabled.)
+The version — paste it and I'll confirm the Argo Rollouts channel and Strimzi/AMQ Streams compatibility, which both pin to OCP version ranges.
+we have single node cluster right now onr master and one worker
+can we run this kafka setup on that
+
+Let me be precise, because "one master and one worker" changes the answer a bit from pure single-node.
+
+
+Searched the web
+Searched the web
+Yes — you can run a Kafka setup on it, but not the TC-02 setup as written. The TC-02 manifest was built for the production topology (3 brokers, RF=3, rack awareness across zones), and none of those three things fit one worker. You need a single-broker development variant instead.
+
+Here's the honest split.
+
+What won't work from TC-02 as shipped
+
+The manifest sets replicas: 3, default.replication.factor: 3, min.insync.replicas: 2, and rack.topologyKey. On one worker: the 3 broker pods either won't all schedule or land on the same node (pointless), rack awareness needs multiple zones so it does nothing, and — the real blocker — you cannot drain the only worker. The whole point of TC-02 is draining a broker node while the other two hold the line; with one node there's no line to hold. So TC-02's pass criteria are unreachable here no matter how you tune it.
+
+What does work: a single-broker dev cluster
+
+This is a completely legitimate way to learn Strimzi, produce/consume, watch under-replicated-partition metrics, and even wire up your lag-anomaly detector. The key is every replication factor drops to 1:
+
+yaml
+apiVersion: kafka.strimzi.io/v1beta2
+kind: Kafka
+metadata:
+  name: dev-kafka
+  namespace: kafka
+spec:
+  kafka:
+    version: 3.7.0
+    replicas: 1
+    listeners:
+    - { name: plain, port: 9092, type: internal, tls: false }
+    config:
+      offsets.topic.replication.factor: 1
+      transaction.state.log.replication.factor: 1
+      transaction.state.log.min.isr: 1
+      default.replication.factor: 1
+      min.insync.replicas: 1
+    storage: { type: ephemeral }
+  zookeeper:
+    replicas: 1
+    storage: { type: ephemeral }
+  entityOperator:
+    topicOperator: {}
+    userOperator: {}
+Red Hat's own single-node Strimzi example uses exactly this pattern — offsets, transaction-state, and default replication factors all set to 1, with min.insync.replicas at 1. Note two removals versus the production file: no rack block (needs zones) and min.insync.replicas: 1 (you can't have 2 in-sync replicas with 1 broker — leaving it at 2 makes every produce with acks=all hang forever, which is a classic first-time Strimzi mistake). 
+Red Hat
+
+Sizing reality on one EC2 box
+
+Even the dev cluster stacks up: Strimzi operator + 1 Kafka + 1 ZooKeeper + entity operator + your OpenShift control plane, all on one node. On anything smaller than ~16 GB free you'll hit scheduling pressure. Use ephemeral storage (as above) to skip PVC provisioning headaches while learning. If you plan to also run the AIOps CronJobs and a producer load job at the same time, watch node memory closely — that's the same pressure TC-05 deliberately induces.
+
+What the single-broker setup lets you still practice
+
+You keep real value: KafkaTopic creation, producer/consumer flows, consumer-group lag, the JMX→Prometheus metrics path, and you can run lag-anomaly-suppressor.py against real lag. What you lose is the drain/failover story — which is fine, because that's inherently a multi-node property.
+
+One thing worth deciding before you build more on this box: a single EC2 instance running "one master + one worker" is a learning cluster, and everything Kafka-related here is a learning exercise, not a production validation. That's genuinely useful for your hands-on and resume goals. But when it comes time to demo failover to a client or manager, the drain test needs the real 3-broker / 3-AZ cluster — there's no way to fake broker failover on one node, and a technical buyer will know.
+
+Want me to write out the full single-broker lab — the dev manifest above, plus produce/consume commands, a topic, a consumer group, and the adjusted lag-detector wiring — as a ready-to-run script sized for one node?
+
+
+
+Message collapsed
+This is a genuinely useful preflight — it tells me more than "one master, one worker" did, and a couple of things are better than I expected. Let me read it back honestly.
+
+What's actually good here
+
+Real IPI cluster on 4.20.8, not CRC — so the monitoring stack is real and the Thanos route resolves. That means all the AIOps Python jobs will work (they query Thanos, which you have). That was my biggest open question and it's answered: your detectors can run.
+
+Both nodes are healthy, control plane on us-east-1f, worker on us-east-1c. That's the surprise — you have two AZs, not one. I'd assumed a single-AZ box. Two zones changes what's possible for a couple of test cases (more below).
+
+The memory reality, which is the real constraint
+
+Look at the master: 9874Mi used, 32% — so it's roughly a 30GB node and already carrying the control plane plus monitoring. The worker is at 3131Mi/21%, so also ~15GB and nearly empty. The trouble is your workloads only get the one worker (the master is tainted NoSchedule by default), so everything you deploy competes for that single ~15GB worker. A Strimzi stack plus Argo plus your test workloads will fill it quickly. So even the dev-Kafka has to stay lean: replicas: 1, ephemeral storage, RF=1.
+
+Now, case by case, on this exact cluster
+
+All Part A labs (1–5): run as-is. One worker is plenty for Deployments, Jobs, Routes, canary rollouts, and the diagnosis drills.
+TC-02 Kafka drain: still no. Two AZs but only one worker — you can't drain the single worker (nothing to reschedule onto), and 3 brokers can't spread across nodes when there's one schedulable node. Run the single-broker dev Kafka I gave you for hands-on; the failover test needs more workers.
+TC-04 zone partition: this one becomes partially real now, because you genuinely have two zones. But with one node per zone and the worker isolated to 1c, you can demonstrate the correlation logic but not a meaningful east-west workload partition (all your pods live in 1c). Close, but not honest yet.
+TC-01 etcd: single etcd member (one master) — you can fire the anomaly detector and watch fsync latency, but there's no quorum to survive. Detector: yes. Quorum test: no.
+TC-03 canary upgrade: needs 2+ workers to split canary from paused pool. One worker, so no.
+TC-05 memory leak: do not run this here. With one worker, a leak that reaches node pressure will let the kubelet evict your workloads with nowhere to move them, and on a ~15GB node under an already-loaded cluster that's easy to hit. Use the Lab 5 Drill 3 version instead (OOMKilled with a hard limit) — same lesson, no risk to the node.
+One quick fix for scipy
+
+Only TC-03 needs it, and TC-03 can't run here anyway, so you can skip it. If you want it for later: pip install scipy --user --break-system-packages (the flag matters on RHEL's system Python), or better, run these detectors inside a pod using the ubi9/python-311 image rather than on the bastion.
+
+The bigger picture, said plainly
+
+This cluster is a solid learning and AIOps-development environment — the labs, the single-broker Kafka, and every Python detector all work on it. What it can't do is the four multi-node failure tests (TC-01 quorum, TC-02 drain, TC-03 canary, TC-05 node eviction), because those are defined by having nodes to lose. No tuning changes that; it's topology.
+
+The cheapest path to unlock the full suite: add one more worker and you can run TC-02 (dev-scale drain), TC-03 (canary vs. paused), and TC-05 safely. Add a second worker in a different AZ (you already span 1c and 1f) and TC-04 becomes a real cross-zone partition. You don't need the full 3+3; going from 1 worker to 3 workers unlocks four of the five.
+
+Want me to write the ready-to-run single-broker Kafka lab sized for this specific worker (RF=1, ephemeral, resource requests that fit ~15GB), plus the produce/consume/lag-detector wiring so you get real hands-on Kafka today on what you already have?
+
+give me a set of commands to do this setup
+give me seprate file
+
+
+Ran a command
+Ran a command
+I'll build this as separate files: the operator install, the single-broker cluster manifest, a topic, produce/consume commands, the lag detector wiring, and cleanup — plus a README. All sized for your one ~15GB worker.
+
+
+Created 8 files
+Created 8 files
+Now let me syntax-check everything and package it.
+
+
+Ran a command
+Ran a command
+All checks pass. Packaging.
+
+
+Ran a command, read a file
+Ran a command, read a file
+Packaged and syntax-checked. Nine files, sized for your one ~15Gi worker.
+
+Run order:
+
+00-install-operator.sh — installs AMQ Streams (Red Hat build) via OperatorHub; wait for the CSV to reach Succeeded. It prints the default channel first so you use the right one.
+02-deploy.sh — creates the JMX metrics ConfigMap, deploys the cluster, waits for Ready.
+03-produce-consume.sh — interactive producer/consumer test, then a steady load + consumer group to generate real lag.
+04-lag-detector.sh — enables user-workload monitoring, adds a PodMonitor to scrape Kafka's JMX metrics, and runs lag-detector.py as an in-cluster Job (so no scipy/pip on the bastion).
+The three things I built in specifically for a single broker — because each is a first-timer trap:
+
+Every replication factor is 1. With one broker, RF>1 leaves every topic permanently under-replicated.
+min.insync.replicas: 1, and the producer uses acks=1. Leave min.insync at 2 and every acks=all produce hangs forever — that's the single most common single-broker Strimzi failure.
+No rack block. You have two AZs but one worker, so rack awareness has nothing to balance.
+Honest scope reminder: this is the real detection half — working Kafka, real lag, real EWMA/3-sigma anomaly firing against real Prometheus data. It is not the TC-02 broker-drain failover test; that needs 3 brokers on 3 nodes and can't be faked here. The README spells out exactly what to change when you add a second and third worker — bump replicas to 3, restore the RFs and min.insync to 2, re-add the rack block — and TC-02 from the main pack becomes runnable with nothing else changed.
+
+One thing to watch the first time: after you start producing, give Prometheus a minute or two to scrape before running the detector, or it'll report warming_up / no_lag_data — that's expected, not a failure. Check oc adm top node if any pod goes Pending; the requests are deliberately small but everything lands on that one worker.
+
+
+Kafka single node lab
+ZIP 
+
+
+You’ve used 75% of your weekly limit
+Get more usage
+
+
+
+
+
+
+Claude is AI and can make mistakes. Please double-check responses.
+Kafka single node lab · ZIP
+Kafka single node lab
+ZIP
+No preview available
