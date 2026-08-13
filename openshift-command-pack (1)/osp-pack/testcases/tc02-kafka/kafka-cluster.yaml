@@ -1,0 +1,53 @@
+# Strimzi Kafka: 3 brokers, rack-aware, RF=3 / min.insync=2
+# Prereq: Strimzi operator installed from OperatorHub (AMQ Streams on OCP)
+apiVersion: kafka.strimzi.io/v1beta2
+kind: Kafka
+metadata:
+  name: prod-kafka
+  namespace: kafka
+spec:
+  kafka:
+    version: 3.7.0
+    replicas: 3
+    rack:
+      topologyKey: topology.kubernetes.io/zone
+    listeners:
+    - name: plain
+      port: 9092
+      type: internal
+      tls: false
+    config:
+      default.replication.factor: 3
+      min.insync.replicas: 2
+      offsets.topic.replication.factor: 3
+      transaction.state.log.replication.factor: 3
+      transaction.state.log.min.isr: 2
+    storage:
+      type: persistent-claim
+      size: 20Gi
+      deleteClaim: true
+    template:
+      podDisruptionBudget:
+        maxUnavailable: 1
+    metricsConfig:
+      type: jmxPrometheusExporter
+      valueFrom:
+        configMapKeyRef: { name: kafka-metrics, key: kafka-metrics-config.yml }
+  zookeeper:
+    replicas: 3
+    storage: { type: persistent-claim, size: 5Gi, deleteClaim: true }
+  entityOperator:
+    topicOperator: {}
+    userOperator: {}
+---
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaTopic
+metadata:
+  name: load-topic
+  namespace: kafka
+  labels: { strimzi.io/cluster: prod-kafka }
+spec:
+  partitions: 12
+  replicas: 3
+  config:
+    min.insync.replicas: 2

@@ -1,0 +1,35 @@
+# TC-01 AIOps CronJob: mounts anomaly-detector.py via ConfigMap.
+# Create the ConfigMap first:
+#   oc create ns aiops
+#   oc adm policy add-cluster-role-to-user cluster-monitoring-view -z etcd-anomaly -n aiops
+#   oc create sa etcd-anomaly -n aiops
+#   oc create configmap etcd-anomaly-src --from-file=anomaly-detector.py -n aiops
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: etcd-fsync-anomaly
+  namespace: aiops
+spec:
+  schedule: "* * * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 120
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      template:
+        spec:
+          serviceAccountName: etcd-anomaly
+          restartPolicy: Never
+          containers:
+          - name: detector
+            image: registry.access.redhat.com/ubi9/python-311
+            command: ["python3", "/src/anomaly-detector.py"]
+            volumeMounts:
+            - { name: src, mountPath: /src }
+            - { name: state, mountPath: /state }
+          volumes:
+          - name: src
+            configMap: { name: etcd-anomaly-src }
+          - name: state
+            emptyDir: {}

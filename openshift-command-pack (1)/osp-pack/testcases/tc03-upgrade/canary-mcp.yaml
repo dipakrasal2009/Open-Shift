@@ -1,0 +1,16 @@
+# TC-03: Canary MachineConfigPool - 2 workers upgrade first, fleet stays paused
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfigPool
+metadata:
+  name: canary
+spec:
+  machineConfigSelector:
+    matchExpressions:
+    - key: machineconfiguration.openshift.io/role
+      operator: In
+      values: [worker, canary]
+  nodeSelector:
+    matchLabels:
+      node-role.kubernetes.io/canary: ""
+  maxUnavailable: 1
+  paused: false

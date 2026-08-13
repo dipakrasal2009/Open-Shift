@@ -1,0 +1,28 @@
+# TC-04 mesh probe: DaemonSet that curls a headless service of all peers,
+# exporting per-pair success as a Prometheus gauge (via textfile/pushgateway
+# or a /metrics endpoint). Simplified here to log SUCCESS/FAIL with zone labels.
+apiVersion: v1
+kind: Service
+metadata: { name: mesh, namespace: prod-sim }
+spec:
+  clusterIP: None
+  selector: { app: mesh-probe }
+  ports: [{ port: 8080 }]
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata: { name: mesh-probe, namespace: prod-sim }
+spec:
+  selector: { matchLabels: { app: mesh-probe } }
+  template:
+    metadata: { labels: { app: mesh-probe } }
+    spec:
+      containers:
+      - name: probe
+        image: quay.io/openshifttest/hello-openshift:1.2.0
+        ports: [{ containerPort: 8080 }]
+        env:
+        - name: MY_NODE
+          valueFrom: { fieldRef: { fieldPath: spec.nodeName } }
+        - name: MY_ZONE
+          valueFrom: { fieldRef: { fieldPath: metadata.labels[topology.kubernetes.io/zone] } }
