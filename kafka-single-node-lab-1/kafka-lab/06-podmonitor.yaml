@@ -1,0 +1,25 @@
+# Enables OpenShift user-workload monitoring to scrape Strimzi's JMX exporter,
+# so PromQL like kafka_consumergroup_lag becomes queryable via Thanos.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-monitoring-config
+  namespace: openshift-monitoring
+data:
+  config.yaml: |
+    enableUserWorkload: true
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: dev-kafka-metrics
+  namespace: kafka
+  labels: { app: strimzi }
+spec:
+  selector:
+    matchLabels: { strimzi.io/cluster: dev-kafka }
+  namespaceSelector:
+    matchNames: [kafka]
+  podMetricsEndpoints:
+  - path: /metrics
+    port: tcp-prometheus
