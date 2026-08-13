@@ -1,0 +1,11 @@
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaTopic
+metadata:
+  name: load-topic
+  namespace: kafka
+  labels: { strimzi.io/cluster: dev-kafka }
+spec:
+  partitions: 6
+  replicas: 1
+  config:
+    min.insync.replicas: 1

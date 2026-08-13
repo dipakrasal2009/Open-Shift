@@ -1,0 +1,47 @@
+# Single-broker DEV Kafka cluster - sized for 1 worker (~15Gi allocatable)
+# Differences from the 3-broker production manifest, and WHY:
+#   replicas: 1                        -> only one schedulable worker exists
+#   default.replication.factor: 1      -> RF>1 is permanently under-replicated with 1 broker
+#   offsets/txn replication factor: 1  -> same reason, these default to 3 upstream
+#   min.insync.replicas: 1             -> min.insync=2 + acks=all on 1 broker hangs forever
+#   storage: ephemeral                 -> skip PVC/StorageClass complexity while learning
+#   no `rack` block                    -> rack awareness needs >1 node to balance across
+apiVersion: kafka.strimzi.io/v1beta2
+kind: Kafka
+metadata:
+  name: dev-kafka
+  namespace: kafka
+spec:
+  kafka:
+    version: 3.7.0
+    replicas: 1
+    listeners:
+    - name: plain
+      port: 9092
+      type: internal
+      tls: false
+    config:
+      offsets.topic.replication.factor: 1
+      transaction.state.log.replication.factor: 1
+      transaction.state.log.min.isr: 1
+      default.replication.factor: 1
+      min.insync.replicas: 1
+    resources:
+      requests: { cpu: 250m, memory: 1Gi }
+      limits: { memory: 1536Mi }
+    storage:
+      type: ephemeral
+    metricsConfig:
+      type: jmxPrometheusExporter
+      valueFrom:
+        configMapKeyRef: { name: kafka-metrics, key: kafka-metrics-config.yml }
+  zookeeper:
+    replicas: 1
+    resources:
+      requests: { cpu: 100m, memory: 512Mi }
+      limits: { memory: 768Mi }
+    storage:
+      type: ephemeral
+  entityOperator:
+    topicOperator: {}
+    userOperator: {}

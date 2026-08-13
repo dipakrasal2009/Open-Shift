@@ -1,0 +1,38 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata: { name: kafka-lag-detector, namespace: kafka }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: { name: kafka-lag-detector-monitoring-view }
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-monitoring-view
+subjects:
+- kind: ServiceAccount
+  name: kafka-lag-detector
+  namespace: kafka
+# NOTE: the "lag-detector-src" ConfigMap referenced below is NOT defined here -
+# it's created from the real lag-detector.py file by 08-run-detector.sh
+# (oc create configmap --from-file=lag-detector.py). Applying this file alone
+# without running that script first will leave the Job's volume unresolved.
+---
+apiVersion: batch/v1
+kind: Job
+metadata: { name: kafka-lag-detector, namespace: kafka }
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      serviceAccountName: kafka-lag-detector
+      restartPolicy: Never
+      containers:
+      - name: detector
+        image: registry.access.redhat.com/ubi9/python-311
+        command: ["python3", "/src/lag-detector.py"]
+        volumeMounts:
+        - { name: src, mountPath: /src }
+      volumes:
+      - name: src
+        configMap: { name: lag-detector-src }
